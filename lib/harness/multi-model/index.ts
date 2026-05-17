@@ -2,83 +2,145 @@ import { generateText } from "ai";
 import { getLanguageModel } from "@/lib/ai/providers";
 import type { Harness, HarnessInput, HarnessOutput, HarnessStep } from "../interface";
 
-// ─── Multi-Model Harness ──────────────────────────────────────────────────────
+// ─── Multi-Model Harness (3-Tier Semantic Router) ────────────────────────────
 // Owner: Hacker B
-// Approach: route subtasks to specialized models.
-//   - Planner model: breaks task into steps
-//   - Executor model: runs each step (with tools)
-//   - Synthesizer model: combines results into final answer
-// Feel free to change models, routing logic, and pipeline below.
+// Approach: classify the task, then dispatch to the smallest model that can
+// plausibly answer it.
+//   - Tier 1  Routine        → Haiku   (cheap, fast)
+//   - Tier 2  Complex        → Sonnet  (capable, mid-cost)
+//   - Tier 3  Hard reasoning → Opus    (premium, used sparingly)
+// The classifier is a pure function (no API call) so cheap tiers stay cheap.
 // Do NOT change the HarnessInput / HarnessOutput types — those are the contract.
 
-const PLANNER_MODEL = "claude-haiku-4-5-20251001";   // fast, cheap — plan only
-const EXECUTOR_MODEL = "claude-sonnet-4-6";           // capable — tool use + execution
-const SYNTHESIZER_MODEL = "claude-sonnet-4-6";        // final answer synthesis
+const ROUTINE_MODEL = "claude-haiku-4-5-20251001";
+const COMPLEX_MODEL = "claude-sonnet-4-6";
+const HARD_MODEL = "claude-opus-4-7";
+
+// USD per million tokens. Update if Anthropic pricing changes.
+const PRICES: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-opus-4-7": { input: 15, output: 75 },
+};
+
+const COMPLEX_KEYWORDS = [
+  "log",
+  "error",
+  "stack trace",
+  "traceback",
+  "crash",
+  "deadlock",
+  "exception",
+  "debug",
+  "memory leak",
+];
+
+const HARD_KEYWORDS = [
+  "root cause",
+  "architecture",
+  "trade-off",
+  "tradeoff",
+  "comprehensive analysis",
+  "step-by-step",
+  "investigate",
+  "diagnose",
+  "design review",
+];
+
+const COMPLEX_LENGTH = 500;
+const HARD_LENGTH = 2000;
+
+type Route = { model: string; tier: "routine" | "complex" | "hard"; reason: string };
+
+export function classify(task: string): Route {
+  const lower = task.toLowerCase();
+
+  if (task.length > HARD_LENGTH) {
+    return { model: HARD_MODEL, tier: "hard", reason: `length ${task.length} > ${HARD_LENGTH}` };
+  }
+  const hardHit = HARD_KEYWORDS.find((k) => lower.includes(k));
+  if (hardHit) {
+    return { model: HARD_MODEL, tier: "hard", reason: `matched hard keyword "${hardHit}"` };
+  }
+
+  if (task.length > COMPLEX_LENGTH) {
+    return {
+      model: COMPLEX_MODEL,
+      tier: "complex",
+      reason: `length ${task.length} > ${COMPLEX_LENGTH}`,
+    };
+  }
+  const complexHit = COMPLEX_KEYWORDS.find((k) => lower.includes(k));
+  if (complexHit) {
+    return {
+      model: COMPLEX_MODEL,
+      tier: "complex",
+      reason: `matched complex keyword "${complexHit}"`,
+    };
+  }
+
+  return { model: ROUTINE_MODEL, tier: "routine", reason: "short, no complexity signals" };
+}
+
+function cost(model: string, promptTokens: number, completionTokens: number): number {
+  const p = PRICES[model];
+  if (!p) return 0;
+  return (promptTokens * p.input + completionTokens * p.output) / 1_000_000;
+}
 
 export const multiModelHarness: Harness = {
   name: "multi-model",
-  description: "Planner → Executor → Synthesizer pipeline across specialized models",
+  description: "3-tier semantic router: routine→Haiku, complex→Sonnet, hard→Opus",
 
   async run(input: HarnessInput): Promise<HarnessOutput> {
     const start = Date.now();
     const steps: HarnessStep[] = [];
-    let totalTokens = 0;
 
-    // ── Step 1: Plan ─────────────────────────────────────────────────────────
-    const planStart = Date.now();
-    const { text: plan, usage: planUsage } = await generateText({
-      model: getLanguageModel(PLANNER_MODEL),
-      system: "You are a planner. Break the task into numbered steps. Be concise.",
-      prompt: input.task,
-    });
-    totalTokens += (planUsage?.promptTokens ?? 0) + (planUsage?.completionTokens ?? 0);
+    // ── Classify ─────────────────────────────────────────────────────────────
+    const route = classify(input.task);
     steps.push({
       type: "reasoning",
-      content: plan,
-      model: PLANNER_MODEL,
-      latencyMs: Date.now() - planStart,
+      content: `Router → ${route.tier} → ${route.model} (${route.reason})`,
     });
 
-    // ── Step 2: Execute ───────────────────────────────────────────────────────
+    // ── Execute ──────────────────────────────────────────────────────────────
     const execStart = Date.now();
-    const { text: execution, usage: execUsage, steps: execSteps } = await generateText({
-      model: getLanguageModel(EXECUTOR_MODEL),
-      system: input.systemPrompt ?? "Execute the plan step by step. Use tools when needed.",
-      prompt: `Original task: ${input.task}\n\nPlan:\n${plan}\n\nNow execute each step.`,
+    const { text, usage, steps: execSteps } = await generateText({
+      model: getLanguageModel(route.model),
+      system: input.systemPrompt,
+      prompt: input.task,
       tools: input.tools,
       maxSteps: input.maxSteps ?? 5,
     });
-    totalTokens += (execUsage?.promptTokens ?? 0) + (execUsage?.completionTokens ?? 0);
-    steps.push({
-      type: "output",
-      content: execution,
-      model: EXECUTOR_MODEL,
-      latencyMs: Date.now() - execStart,
-    });
+    const latencyMs = Date.now() - execStart;
+    const promptTokens = usage?.promptTokens ?? 0;
+    const completionTokens = usage?.completionTokens ?? 0;
 
-    // ── Step 3: Synthesize ────────────────────────────────────────────────────
-    const synthStart = Date.now();
-    const { text: result, usage: synthUsage } = await generateText({
-      model: getLanguageModel(SYNTHESIZER_MODEL),
-      system: "Synthesize the execution results into a clear, final answer for the user.",
-      prompt: `Task: ${input.task}\n\nExecution results:\n${execution}`,
-    });
-    totalTokens += (synthUsage?.promptTokens ?? 0) + (synthUsage?.completionTokens ?? 0);
-    steps.push({
-      type: "output",
-      content: result,
-      model: SYNTHESIZER_MODEL,
-      latencyMs: Date.now() - synthStart,
-    });
+    if (execSteps && execSteps.length > 0) {
+      for (const s of execSteps) {
+        steps.push({
+          type: "output",
+          content: typeof s.text === "string" ? s.text : JSON.stringify(s),
+          model: route.model,
+        });
+      }
+    } else {
+      steps.push({
+        type: "output",
+        content: text,
+        model: route.model,
+        latencyMs,
+      });
+    }
 
     return {
-      result,
+      result: text,
       steps,
       metrics: {
         totalLatencyMs: Date.now() - start,
-        totalTokensUsed: totalTokens,
-        estimatedCostUsd: 0,      // TODO: wire up cost calculation
-        modelsUsed: [...new Set([PLANNER_MODEL, EXECUTOR_MODEL, SYNTHESIZER_MODEL])],
+        totalTokensUsed: promptTokens + completionTokens,
+        estimatedCostUsd: cost(route.model, promptTokens, completionTokens),
+        modelsUsed: [route.model],
       },
     };
   },
