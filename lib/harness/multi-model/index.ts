@@ -32,10 +32,29 @@ type HarnessTools = Record<string, HarnessTool>;
 // Pi reports cost in USD directly via Usage.cost.total — no local price table.
 // Do NOT change the HarnessInput / HarnessOutput types — those are the contract.
 
-const PROVIDER = "vercel-ai-gateway" as const;
-const ROUTINE_MODEL = "anthropic/claude-haiku-4.5";
-const COMPLEX_MODEL = "anthropic/claude-sonnet-4.6";
-const HARD_MODEL = "anthropic/claude-opus-4.7";
+// Provider selection: prefer Vercel AI Gateway (matches the team's .env.example),
+// fall back to direct Anthropic if only ANTHROPIC_API_KEY is set. Pi auto-picks
+// the corresponding env var.
+const PROVIDER = process.env.AI_GATEWAY_API_KEY
+  ? "vercel-ai-gateway"
+  : "anthropic";
+
+const MODEL_IDS = {
+  "vercel-ai-gateway": {
+    routine: "anthropic/claude-haiku-4.5",
+    complex: "anthropic/claude-sonnet-4.6",
+    hard: "anthropic/claude-opus-4.7",
+  },
+  anthropic: {
+    routine: "claude-haiku-4-5",
+    complex: "claude-sonnet-4-6",
+    hard: "claude-opus-4-7",
+  },
+} as const;
+
+const ROUTINE_MODEL = MODEL_IDS[PROVIDER].routine;
+const COMPLEX_MODEL = MODEL_IDS[PROVIDER].complex;
+const HARD_MODEL = MODEL_IDS[PROVIDER].hard;
 
 const COMPLEX_KEYWORDS = [
   "log",
@@ -232,12 +251,23 @@ export const multiModelHarness: Harness = {
     for (let step = 0; step < maxSteps; step++) {
       let msg: AssistantMessage;
       try {
-        msg = await complete(model, context);
+        msg = await complete(model, context, { maxTokens: 4096 });
       } catch (err) {
         lastError = String(err);
         steps.push({
           type: "output",
           content: `Pi complete() error: ${lastError}`,
+          model: route.model,
+        });
+        break;
+      }
+
+      // Pi surfaces provider errors in the message itself rather than throwing.
+      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+        lastError = msg.errorMessage ?? `Pi returned stopReason=${msg.stopReason}`;
+        steps.push({
+          type: "output",
+          content: `Pi error (${msg.stopReason}): ${lastError}`,
           model: route.model,
         });
         break;
