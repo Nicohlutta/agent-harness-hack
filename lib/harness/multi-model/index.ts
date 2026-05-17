@@ -1,7 +1,7 @@
 import {
   type AssistantMessage,
-  complete,
   type Context,
+  complete,
   getModel,
   type Message,
   type Tool,
@@ -9,7 +9,12 @@ import {
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import type { Harness, HarnessInput, HarnessOutput, HarnessStep } from "../interface";
+import type {
+  Harness,
+  HarnessInput,
+  HarnessOutput,
+  HarnessStep,
+} from "../interface";
 
 // HarnessTool from "ai" is referenced in interface.ts but not re-exported by AI SDK v6.
 // Reuse the contract's resolved tool-map type to stay aligned without re-importing.
@@ -156,7 +161,8 @@ async function runToolCalls(
 
     steps.push({
       type: "tool_result",
-      content: resultText.length > 500 ? `${resultText.slice(0, 500)}…` : resultText,
+      content:
+        resultText.length > 500 ? `${resultText.slice(0, 500)}…` : resultText,
     });
 
     results.push({
@@ -185,7 +191,8 @@ function extractToolCalls(msg: AssistantMessage): ToolCall[] {
 
 export const multiModelHarness: Harness = {
   name: "multi-model",
-  description: "3-tier semantic router (Pi-powered): routine→Haiku, complex→Sonnet, hard→Opus",
+  description:
+    "3-tier semantic router (Pi-powered): routine→Haiku, complex→Sonnet, hard→Opus",
 
   async run(input: HarnessInput): Promise<HarnessOutput> {
     const start = Date.now();
@@ -202,7 +209,9 @@ export const multiModelHarness: Harness = {
     // biome-ignore lint/suspicious/noExplicitAny: Pi's getModel is typed against a generated registry; we use a runtime string.
     const model = getModel(PROVIDER, route.model as any);
     const toolMap = input.tools ?? {};
-    const piTools: Tool[] = Object.entries(toolMap).map(([n, t]) => adaptTool(n, t));
+    const piTools: Tool[] = Object.entries(toolMap).map(([n, t]) =>
+      adaptTool(n, t)
+    );
 
     const messages: Message[] = [
       { role: "user", content: input.task, timestamp: Date.now() },
@@ -249,7 +258,10 @@ export const multiModelHarness: Harness = {
       }
 
       context.messages.push(msg);
-      const { results, steps: toolSteps } = await runToolCalls(toolCalls, toolMap);
+      const { results, steps: toolSteps } = await runToolCalls(
+        toolCalls,
+        toolMap
+      );
       steps.push(...toolSteps);
       context.messages.push(...results);
     }
