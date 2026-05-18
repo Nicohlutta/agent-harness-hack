@@ -2,14 +2,18 @@
   "name": "agent-harness-hack",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev --turbo",
     "build": "next build",
     "start": "next start",
     "check": "ultracite check",
-    "fix": "ultracite fix"
+    "fix": "ultracite fix",
+    "prompt": "tsx --env-file=.env.local scripts/run-prompt.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.75.0",
+    "@earendil-works/pi-ai": "^0.75.0",
     "ai": "6.0.116",
     "clsx": "^2.1.1",
     "lucide-react": "^0.446.0",
@@ -18,7 +22,8 @@
     "react-dom": "19.0.1",
     "tailwind-merge": "^2.5.2",
     "tailwindcss-animate": "^1.0.7",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.11",
